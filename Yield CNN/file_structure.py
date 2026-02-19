@@ -1,9 +1,30 @@
+"""
+Name: Reynaldo Gomez
+Last Edited: 2/18/2026
+
+Description:
+
+This script loads the LSWMD wafer map dataset from a pickle file that was created using an older version of pandas and would otherwise fail to open in a modern environment due to 
+deprecated module paths. It resolves this by remapping the legacy pandas index modules so the dataset can be reconstructed correctly during loading.
+
+The code inspects its structure and processes the failureType column to extract usable scalar labels from nested array formats that prevent direct analysis. 
+It then identifies the unique defect classes and computes their frequency counts, enabling an initial assessment of class imbalance across the labeled wafer defect categories for downstream CNN training.
+
+Notes:
+From the LSWMD.pkl dataset; we know that:
+    - 811,457 total rows but 638,507 are unlabeled; this leaves 172,950 usable labeled rows for training.
+    - 9 classes: 8 defect types + (no defect)
+    - Imbalance with 147k samples but `Near-full` only has 149 so WeightedRandomSampler will be crucial
+
+"""
+
+
 import sys
 import types
 import pickle as pkl
 from pathlib import Path
 import pandas
-
+import numpy as np
 # These three submodules still exist in pandas 2.x under core.indexes
 # We import them directly so we can remap them below
 import pandas.core.indexes.base
@@ -52,7 +73,7 @@ def extract_label(val):
     This is a numpy array containing a list containing the label string.
     Calling pandas .unique() on this fails with "unhashable type: numpy.ndarray"
     because arrays can't be used as dict keys in the hash table unique() uses.
-    
+
     This function peels off nesting layers until it reaches the scalar string.
     Empty arrays (unlabeled wafers) become the string '[]'.
 
@@ -62,7 +83,6 @@ def extract_label(val):
         val = val[0]
     return str(val)
 
-import numpy as np
 labels = obj["failureType"].apply(extract_label)
 print("\nfailureType unique values:", sorted(labels.unique()))
 print("\nfailureType value counts:")
