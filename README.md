@@ -31,8 +31,8 @@ The "differential score analyzer" concept mapped to real techniques: dynamic cla
 | Experiment | Epochs | Macro F1 | Donut F1 | Scratch F1 | Notes |
 |---|---|---|---|---|---|
 | Baseline (plain CNN) | 20 | 0.80 | 0.56 | 0.76 | CrossEntropyLoss, MaxPool |
-| EXP-01+04+07 | 20 | 0.87 | 0.89 | 0.71 | ResNet + SiLU + FocalLoss |
-| EXP-01+04+07 | 40 | 0.89 | 0.87 | 0.80 | +20 epochs, CosineAnnealingLR |
+| ResNet+Focal | 20 | 0.87 | 0.89 | 0.71 | ResNet + SiLU + FocalLoss |
+| ResNet+Focal | 40 | 0.89 | 0.87 | 0.80 | +20 epochs, CosineAnnealingLR |
 
 ---
 
