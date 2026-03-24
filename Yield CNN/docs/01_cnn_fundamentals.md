@@ -1,133 +1,118 @@
-# CNN Fundamentals
-**Author: Reynaldo Gomez**
-**Repo: Semiconductor-Engineering / Yield CNN**
+# CNN fundamentals
+
+Author: Reynaldo Gomez
+Semiconductor-Engineering: Yield CNN
 
 ---
 
-## What a CNN Is
+## What a CNN is
 
 A CNN is a mathematical function with learnable parameters.
 
-```
-f_theta(x) = y_hat
-```
+$$
+f_{\theta}(x) = \hat{y}
+$$
 
-- `x` is the input wafer map: a 64x64 grid of numbers
-- `y_hat` is the output: a vector of 9 scores, one per defect class
-- `theta` is every learnable number in the network (weights and biases)
+- `x` is the input wafer map: a 64×64 grid of numbers
+- $\hat{y}$ is the output: a vector of 9 scores, one per defect class
+- $\theta$ is every learnable number in the network (weights and biases)
 
-Training is finding theta that makes f_theta good at its job.
-Every line of code in yield_multi_classifier.py and yield_resnet_focal.py
-exists to serve this one goal.
+Training is finding the $\theta$ that makes $f_\theta$ good at its job. Every line of code in `yield_multi_classifier.py` and `yield_resnet_focal.py` exists to serve this one goal.
 
 ---
 
-## The Forward Pass: What Happens to the Data
+## The forward pass: What happens to the data
 
-When `logits = model(x)` is called, the wafer map flows through these stages
-in order. Each stage transforms the data before passing it to the next.
+When `logits = model(x)` is called, the wafer map is transformed by a sequence of
+differentiable operations before the final class scores are produced. Each stage
+operates on the output of the previous one.
 
 ### Stage 1: Convolution
 
-A 64x64 wafer map enters. The first conv layer has 32 filters, each 3x3.
-Each filter slides across the image and computes a dot product at every position:
+A 64×64 wafer map enters the first convolutional layer, which applies 32 learned filters
+each of spatial extent 3×3. For each filter, the operation at every output position is
+a dot product between the filter weights and the corresponding input patch, plus a scalar
+bias:
 
-```
-output[i,j] = sum over m,n of: W[m,n] * x[i+m, j+n]  +  b
-```
+$$
+Z[i,j] = \sum_{m,n} W[m,n] \cdot x[i+m,\, j+n] + b
+$$
 
-W is the 3x3 filter weight matrix. x is the input patch. b is a bias scalar.
-This produces one number per position per filter.
+`W` is the 3×3 weight matrix, `x` is the local input patch, and `b` is the bias. With
+32 filters applied to a 64×64 input, the output is a (32, 64, 64) tensor: 32 feature
+maps, each encoding where in the image one particular learned pattern was detected.
 
-With 32 filters on a 64x64 input the output is (32, 64, 64): 32 feature maps,
-each showing where that filter's pattern was detected across the image.
+The filters are updated by gradient descent alongside all other parameters. In practice, shallow layers converge toward detecting low-level spatial structure, such as edges, gradients, and localized intensity blobs, while deeper layers combine these into curves, corners, rings, and full defect signatures. This hierarchical composition is the structural reason for stacking layers: each layer operates on the abstracted representations produced by all previous layers. In matrix form across all filters simultaneously, convolution is `Z = W * X + b`, a sequence of matrix multiplications separated by nonlinearities.
 
-What the filters learn to detect:
-- Layer 1 filters: edges, gradients, blobs
-- Layer 2 filters: combinations of edges (curves, corners, short lines)
-- Layer 3 filters: combinations of curves (rings, clusters, partial patterns)
-- Layer 4 filters: full defect signatures (complete rings, scratch lines, center blobs)
+### Stage 2: Batch normalization
 
-This hierarchical feature building is why layers stack. Each layer sees
-what the previous layer found and builds on it.
+After each convolutional layer, BatchNorm2d normalizes the pre-activation values across
+the spatial dimensions of the current mini-batch:
 
-In matrix form, convolution across all filters is:
-```
-Z = W * X + b
-```
-The entire forward pass is a sequence of these matrix multiplies with
-nonlinearities inserted between them.
+$$
+\hat{x}_i = \frac{x_i - \mu_{\text{batch}}}{\sqrt{\sigma^2_{\text{batch}} + \epsilon}} \qquad y_i = \gamma \hat{x}_i + \beta
+$$
 
-### Stage 2: Batch Normalization
+`gamma` and `beta` are learnable parameters initialized to 1 and 0 respectively.
+`epsilon` (typically 1e-5) prevents division by zero near-zero variance. Without normalization, activations across layers drift toward saturated or near-zero values as training depth increases: large activations push the nonlinearity into its flat region, zeroing the gradient; small activations produce no gradient signal and stop learning. BatchNorm keeps each layer's input distribution centered and scaled regardless of what the upstream layers are doing.
 
-After each conv, BatchNorm2d normalizes the activations:
+For LSWMD specifically, the 29,486 *none* samples and the 30 *Near-full* samples carry
+very different statistical profiles. Without BatchNorm, the dominant class monopolizes
+the activation range and rare classes receive negligible gradient signal. BatchNorm
+normalizes within each batch across whichever samples happen to appear, preventing the
+majority class from saturating the activations.
 
-```
-x_hat_i = (x_i - mean_batch) / sqrt(variance_batch + epsilon)
-y_i = gamma * x_hat_i + beta
-```
+### Stage 3: Activation function
 
-gamma and beta are learnable parameters. epsilon (typically 1e-5) prevents
-division by zero.
+The nonlinearity inserted after each normalization step is what makes the network
+capable of learning non-linear decision boundaries. Without a nonlinearity, any stack
+of linear layers collapses to a single linear transformation regardless of depth, and
+the network cannot represent the curved boundaries separating defect classes that occupy
+overlapping regions of the feature space.
 
-Without BatchNorm, activations across layers drift toward very large or very
-small values as training progresses. Large activations saturate the nonlinearity
-(output stops changing with input). Small activations produce near-zero gradients
-(weights stop updating). BatchNorm keeps everything in a stable range.
+The baseline model uses ReLU, defined as `ReLU(x) = max(0, x)`. Its derivative is 1
+for positive inputs and 0 for negative ones. Neurons that accumulate negative
+pre-activations receive zero gradient on every batch and never update, exhibiting the dying
+neuron pathology.
 
-For LSWMD specifically: the 29,486 none wafers and the 30 Near-full wafers have
-very different statistical profiles. Without BatchNorm, the dominant class pushes
-activations into saturated regions and the rare classes get no gradient signal.
-BatchNorm normalizes across whichever samples appear in the batch, preventing
-any class from monopolizing the activation range.
+The ResNet model uses SiLU (also called Swish), defined as `SiLU(x) = x * sigmoid(x)`.
+Its derivative is:
 
-### Stage 3: Activation Function
+$$
+\text{SiLU}'(x) = \sigma(x) + x \cdot \sigma(x)(1 - \sigma(x))
+$$
 
-The nonlinearity that makes the network able to learn complex patterns.
-Without it, stacking linear layers is mathematically equivalent to one linear
-layer; curved decision boundaries are impossible.
+SiLU is smooth and nonzero across essentially its entire domain. Small negative values
+still pass through with a small but non-zero gradient, giving the optimizer signal in
+early training when a large fraction of pre-activations are negative and ReLU would
+produce no learning. The practical effect is faster initial convergence and more robust
+gradient flow in shallow layers.
 
-**ReLU (baseline model):**
-```
-ReLU(x) = max(0, x)
-```
-Zero gradient for x < 0. Neurons that activate negatively are dead to
-the optimizer; they receive no gradient and never update.
+### Stage 4: Spatial downsampling
 
-**SiLU / Swish (resnet_focal model):**
-```
-SiLU(x) = x * sigmoid(x) = x / (1 + e^(-x))
-```
-Derivative:
-```
-SiLU'(x) = sigmoid(x) + x * sigmoid(x) * (1 - sigmoid(x))
-```
-Smooth and nonzero almost everywhere. Small negative values pass through
-with a small gradient. Gives the optimizer more signal in early training
-when many activations are negative.
+Spatial downsampling reduces the feature map resolution so that later layers operate
+on representations covering larger receptive fields of the original input. A 3×3
+filter on a 4×4 feature map covers a region of the original 64×64 image that no single
+filter in the first layer can see.
 
-### Stage 4: Spatial Downsampling
-
-Reduces the spatial dimensions so later layers see larger regions of the input.
-
-**Baseline (MaxPool2d(2)):** Takes the maximum value in each 2x2 window.
-(64,64) becomes (32,32). Fast, but discards 75% of values.
-
-**ResNet model (stride=2 in conv):** The conv itself uses a step size of 2,
-so output positions are spaced 2 pixels apart on the input. Learns the
-downsampling function rather than hardcoding max. Generally better at
-preserving fine structure like thin scratch lines.
+The baseline model uses `MaxPool2d(2)`, which takes the maximum value in each 2×2
+non-overlapping window, reducing a (C, 64, 64) tensor to (C, 32, 32) while discarding
+75% of the values. The ResNet model instead uses stride=2 in the convolutional layer
+itself, stepping the filter by 2 positions at each update. This learns the downsampling
+function from data rather than hardcoding it as a max operation, generally preserving
+more information about thin spatial structures such as scratch lines that MaxPool tends
+to suppress.
 
 ### Stage 5: AdaptiveAvgPool2d
 
-At the end of the feature extractor, regardless of spatial size, this
-collapses every feature map to a single number by averaging all values.
-
-(256, 4, 4) becomes (256, 1, 1): 256 numbers total, one per channel.
-
-The "adaptive" means the output size is specified, not the window size.
-If IMG_SIZE changes from 64 to 128, AdaptiveAvgPool still produces (256, 1, 1).
-The model handles variable input sizes without any code changes.
+At the end of the feature extractor, regardless of the spatial dimensions accumulated
+through the earlier stages, `AdaptiveAvgPool2d(1)` collapses every feature map to a
+single scalar by averaging all spatial positions. A (256, 4, 4) tensor becomes a
+(256, 1, 1) tensor: 256 numbers, one per channel. The ``adaptive'' qualifier means
+the target output size is specified rather than the pooling window, so the operation
+produces the same output shape for any input resolution. This makes the model
+forward-compatible with a change in `IMG_SIZE` without any modification to the
+classifier head.
 
 ### Stage 6: Dropout
 
@@ -135,32 +120,33 @@ The model handles variable input sizes without any code changes.
 self.dropout = nn.Dropout(0.4)
 ```
 
-During training, randomly sets 40% of the 256 features to zero.
-Forces the network to not rely on any single feature; if it does,
-that feature gets zeroed randomly and the model learns to use redundant
-representations.
+During the training forward pass, Dropout randomly zeroes 40% of the 256 post-pool
+feature values before they reach the linear classifier. This prevents any single feature
+from being relied upon exclusively. If a feature achieves high discriminative accuracy
+for one class, the model is forced to learn redundant representations of the same
+information across multiple features because any one of them may be suppressed on a
+given forward pass. During evaluation (`model.eval()`), Dropout is disabled and all 256
+features are passed through unchanged. The 0.4 rate represents a tuning decision:
+higher rates add more regularization at the cost of slower convergence; lower rates
+reduce regularization while allowing the model more expressive capacity.
 
-During eval (model.eval()), dropout is disabled. All 256 features are active.
+### Stage 7: Linear classifier
 
-### Stage 7: Linear Classifier
+$$
+\text{logits} = W_{\text{cls}} \cdot \text{features} + b_{\text{cls}}
+$$
 
-```
-logits = W_classifier * features + b_classifier
-```
-
-A matrix multiply from 256 features to K=9 class scores.
-Output shape: (N, 9): 9 raw scores per sample.
-
-These are called logits. They are NOT probabilities yet.
-To get probabilities: softmax(logits).
-CrossEntropyLoss applies softmax internally, so it never needs to be added
-to the model.
+A single matrix multiplication maps the 256-dimensional feature vector to the 9 class
+scores. The output, shape (N, 9) for a batch of N samples, consists of raw logits,
+not probabilities. Converting to probabilities requires softmax: `p = exp(logit) / sum(exp(logits))`.
+`CrossEntropyLoss` applies the log-softmax internally; adding softmax to the model
+definition would double-apply it and corrupt the loss computation.
 
 ---
 
-## The Skip Connection
+## The skip connection
 
-In ResidualBlock:
+The residual block implements:
 
 ```python
 def forward(self, x):
@@ -170,34 +156,38 @@ def forward(self, x):
     return self.act(out + identity)
 ```
 
-The block learns F(x) = desired_output - x (the residual).
-The full output is F(x) + x.
+The block learns the residual `F(x) = desired_output - x` rather than the full mapping
+`desired_output` directly. The identity shortcut `self.skip(x)`, a 1×1 convolution
+when channel dimensions change or a pass-through when they match, is added to the
+output before the final activation.
 
-During backpropagation, gradients flow through two paths simultaneously:
-through the conv layers AND directly through the skip. The gradient at
-an early layer is:
+The gradient consequence is the essential point. During backpropagation, the gradient
+of the loss with respect to parameters in an early layer `l` is:
 
-```
-d_Loss/d_theta_l = d_Loss/d_z_L * (1 + d_F(x)/d_x)
-```
+$$
+\frac{\partial L}{\partial \theta_l} = \frac{\partial L}{\partial z_L} \cdot \left(1 + \frac{\partial F(x)}{\partial x}\right)
+$$
 
-The +1 term guarantees the gradient is never smaller than the direct path.
-Plain CNNs multiply gradients through every layer; if each is slightly less
-than 1, the product approaches zero and early layers stop learning.
-Residual networks avoid this entirely.
+The `+1` term comes from the identity path and is constant regardless of what `F(x)`
+is doing. In a plain network, the gradient is a product of Jacobians across every
+layer; if each is slightly less than 1 in magnitude, the product approaches zero
+exponentially with depth and early layers receive no useful signal. The skip connection
+guarantees that the gradient through any layer is bounded from below by the direct
+path through the identity, preventing the vanishing gradient regime that makes plain
+deep networks difficult to train.
 
 ---
 
 ## References
 
-ResNet original paper (He et al., 2015):
+He et al., 2015. *Deep Residual Learning for Image Recognition.*
 https://arxiv.org/abs/1512.03385
 
-BatchNorm original paper (Ioffe & Szegedy, 2015):
+Ioffe & Szegedy, 2015. *Batch Normalization: Accelerating Deep Network Training.*
 https://arxiv.org/abs/1502.03167
 
-SiLU / Swish activation (Ramachandran et al., 2017):
+Ramachandran et al., 2017. *Searching for Activation Functions.*
 https://arxiv.org/abs/1710.05941
 
-Deep Learning textbook (Goodfellow et al.), free online:
+Goodfellow, Bengio, Courville. *Deep Learning.* MIT Press.
 https://www.deeplearningbook.org/

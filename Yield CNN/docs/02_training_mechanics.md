@@ -1,73 +1,75 @@
-# Training Mechanics
-**Author: Reynaldo Gomez**
-**Repo: Semiconductor-Engineering / Yield CNN**
+# Training mechanics
+
+Author: Reynaldo Gomez
+Semiconductor-Engineering: Yield CNN
 
 ---
 
-## The Training Loop in Plain English
+## The training loop
 
-Every epoch, for every batch of 128 wafer maps:
-
-```
-1. zero_grad   : clear gradients from the previous batch
-2. forward     : pass data through the model, get logits
-3. loss        : measure how wrong the predictions are
-4. backward    : compute how much each weight contributed to that wrongness
-5. step        : move each weight slightly in the direction that reduces loss
-```
-
-These five lines are the entire engine. Everything else in the training script
-is scaffolding around them.
+Every epoch, for every batch drawn from the training loader, the model executes five
+operations in fixed order:
 
 ```python
-optimizer.zero_grad(set_to_none=True)   # step 1
-logits = model(x)                        # step 2
-loss   = loss_fn(logits, y)              # step 3
-loss.backward()                          # step 4
-optimizer.step()                         # step 5
+optimizer.zero_grad(set_to_none=True)   # clear accumulated gradients
+logits = model(x)                        # forward pass: x -> 9-class scores
+loss   = loss_fn(logits, y)              # scalar loss over the batch
+loss.backward()                          # backprop: compute dL/dtheta for all theta
+optimizer.step()                         # update: move each weight by -lr * gradient
 ```
+
+These five lines are the complete optimization engine. The remainder of the training
+script, covering data loading, checkpoint saving, metric logging, and scheduler updates, is
+scaffolding that supports them.
 
 ---
 
-## Loss Functions
+## Loss functions
 
-### Cross-Entropy Loss (baseline)
+### Cross-entropy loss
 
-For a single sample:
-```
-L_CE = -log(p_t)
-```
+For a single sample, CrossEntropyLoss computes:
 
-p_t is the probability assigned to the correct class.
-- Model says 95% confident, correct:   -log(0.95) = 0.05  (small loss)
-- Model says 5% confident, wrong:      -log(0.05) = 3.0   (large loss)
+$$
+L_{\text{CE}} = -\log(p_t)
+$$
 
-The problem for LSWMD: the model gets good at none (29,486 samples) early.
-Every none sample contributes 0.05 loss and tiny gradient. But 29,486 tiny
-gradients still dominates the update signal over 111 Donut samples at 3.0 each.
-The model allocates its learning capacity to what it sees most.
+where `p_t` is the softmax probability the model assigns to the correct class. A
+confident correct prediction (`p_t = 0.95`) contributes `-log(0.95) = 0.05` to the
+loss; a near-random wrong prediction (`p_t = 0.05`) contributes `-log(0.05) = 3.0`.
+The gradient of the loss with respect to the logits is large when the model is wrong
+and small when it is right, which is the intended behavior.
 
-### Focal Loss (resnet_focal model)
+The problem on LSWMD is one of scale. The model reaches high confidence on *none*
+(29,486 validation samples) early in training, reducing the per-sample CE contribution
+for that class to near zero. But 29,486 near-zero gradients still numerically dominate
+the batch gradient over the 111 Donut or 239 Scratch samples that each contribute full
+loss. The optimizer allocates the majority of its gradient budget to refining *none*
+predictions that are already nearly correct.
 
-```
-L_FL = -(1 - p_t)^gamma * log(p_t)
-```
+### Focal loss
 
-The (1 - p_t)^gamma term is the focal weight. It shrinks when the model
-is already confident and correct.
+FocalLoss modifies CrossEntropyLoss by multiplying the per-sample loss by a
+confidence-dependent weighting term:
 
-With gamma=2.0:
-- p_t = 0.95 (easy correct):  (1 - 0.95)^2 = 0.0025  (near zero)
-- p_t = 0.50 (uncertain):     (1 - 0.50)^2 = 0.25    (moderate)
-- p_t = 0.05 (hard wrong):    (1 - 0.05)^2 = 0.9025  (near full)
+$$
+L_{\text{FL}} = -(1 - p_t)^{\gamma} \log(p_t)
+$$
 
-Effect: the 29k easy none samples contribute almost nothing. The optimizer
-spends its entire gradient budget on Donut, Scratch, and other hard classes.
-This is why Donut F1 went from 0.56 to 0.89 in one experiment.
+The factor `(1 - p_t)^gamma` is the focal weight. With gamma=2.0: a sample correctly
+predicted with probability 0.95 receives weight `(0.05)^2 = 0.0025`, suppressing its
+contribution to near zero; a sample predicted at chance (`p_t = 0.50`) receives weight
+`(0.50)^2 = 0.25`; a hard misclassification (`p_t = 0.05`) receives weight
+`(0.95)^2 = 0.9025`, preserving nearly the full CE gradient. The 29,486 easy *none*
+samples that would otherwise dominate gradient updates are reduced to negligible
+contributors, and the optimizer's effective budget is concentrated on Donut, Scratch,
+and the other spatially ambiguous defect types. This mechanism accounts for the Donut
+F1 improvement from 0.56 to 0.89 between the baseline and ResNet+Focal experiments.
 
-gamma=2.0 is empirical from the original paper. Lower gamma approaches
-standard cross-entropy. Higher gamma over-suppresses easy samples and
-can destabilize training.
+The gamma=2.0 value is empirically established in the original paper. Reducing gamma
+smoothly recovers standard CrossEntropyLoss at gamma=0. Increasing gamma
+over-suppresses easy samples; in practice, values above 5 tend to destabilize training
+as the gradient signal becomes dominated by a small number of hard examples.
 
 Original paper: https://arxiv.org/abs/1708.02002
 
@@ -75,80 +77,78 @@ Original paper: https://arxiv.org/abs/1708.02002
 
 ## Backpropagation
 
-After the forward pass computes a loss L, backprop computes the gradient
-of L with respect to every parameter in the network using the chain rule.
+After the forward pass produces a scalar loss `L`, PyTorch's autograd engine computes
+the gradient of `L` with respect to every trainable parameter via the chain rule.
+For a weight matrix `W_l` in layer `l` of an `L`-layer network:
 
-For a weight W in layer l:
-```
-dL/dW_l = dL/dz_L * dz_L/dz_(L-1) * ... * dz_(l+1)/dz_l * dz_l/dW_l
-```
+$$
+\frac{\partial L}{\partial W_l} = \frac{\partial L}{\partial z_L} \cdot \frac{\partial z_L}{\partial z_{L-1}} \cdots \frac{\partial z_{l+1}}{\partial z_l} \cdot \frac{\partial z_l}{\partial W_l}
+$$
 
-Each dz_(k+1)/dz_k is the Jacobian of one layer's output with respect to its
-input. PyTorch computes all of this automatically through its autograd engine
-when loss.backward() is called.
+Each `dz_(k+1)/dz_k` is the Jacobian of one layer's output with respect to its input,
+evaluated at the current forward-pass activations. PyTorch records the computation
+graph during the forward pass and traverses it in reverse during `loss.backward()` to
+accumulate these products.
 
-The product of Jacobians is the vanishing gradient problem: if each term is
-slightly less than 1, multiplying many together drives the gradient toward zero.
-Early layers stop receiving useful signal and stop learning.
-ResidualBlocks fix this by adding the +1 term (see 01_cnn_fundamentals.md).
+The vanishing gradient problem is the numerical consequence of this product structure:
+if each intermediate Jacobian has singular values slightly below 1, the product of `L`
+Jacobians decays exponentially with depth, and early-layer weights receive gradients
+too small to produce meaningful updates. Skip connections address this by adding a +1
+term to the gradient at each residual block (see `01_cnn_fundamentals.md`), guaranteeing
+a lower bound on gradient magnitude that does not depend on the learned function `F(x)`.
 
 ---
 
 ## Optimizer: AdamW
 
-After backprop computes gradients, AdamW updates each weight:
+After `loss.backward()` populates `param.grad` for every parameter, `optimizer.step()`
+applies the AdamW update rule:
 
-```
-theta_(t+1) = theta_t - lr * m_hat_t / (sqrt(v_hat_t) + epsilon) - lr * lambda * theta_t
-```
+$$
+\theta_{t+1} = \theta_t - \text{lr} \cdot \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon} - \text{lr} \cdot \lambda \cdot \theta_t
+$$
 
-Where:
-- lr (alpha) = learning rate = 3e-4 in the scripts
-- m_hat_t = bias-corrected running mean of gradients (first moment)
-- v_hat_t = bias-corrected running mean of squared gradients (second moment)
-- epsilon = 1e-8, prevents division by zero
-- lambda = weight decay = 1e-4, the "W" in AdamW
+`m_hat_t` is the bias-corrected first moment (running mean of gradients across past
+batches), `v_hat_t` is the bias-corrected second moment (running mean of squared
+gradients), and the final term `- lr * lambda * theta_t` is the weight decay correction.
+In the training scripts, `lr = 3e-4`, `epsilon = 1e-8`, and `lambda = 1e-4`.
 
-What the moments do:
-- m_hat (mean): smooths the update direction across batches
-- v_hat (variance): gives parameters with noisy gradients smaller updates
-
-What weight decay does: adds -lr * lambda * theta to every update.
-This pulls weights toward zero slightly every step, preventing any weight
-from becoming extremely large. Equivalent to L2 regularization but applied
-correctly (standard Adam applies it wrong; AdamW fixes this).
-
-Adam maintains a running estimate of the mean and variance of each gradient.
-Parameters with high gradient variance get smaller effective learning rates.
-This stabilizes training when different parts of the network are learning at
-different speeds, which is common with class imbalance.
+The first moment smooths the update direction across noisy batches; the second moment
+adaptively reduces the learning rate for parameters whose gradients have high variance
+across batches, stabilizing training when different parts of the network, such as the
+feature extractor and the classifier head, are learning at different rates. The weight
+decay term pulls every weight slightly toward zero each step, providing L2 regularization.
+Standard Adam applies weight decay incorrectly by folding it into the adaptive scaling
+term; AdamW decouples them, which Loshchilov & Hutter show produces better regularization.
 
 AdamW paper: https://arxiv.org/abs/1711.05101
 
 ---
 
-## Learning Rate Schedulers
+## Learning rate schedulers
 
-The learning rate controls how large each weight update step is.
-Too large: overshoots the minimum, training diverges.
-Too small: never converges, training is extremely slow.
-Schedulers decay the LR over training so early steps are large
-(fast progress) and late steps are small (fine-tuning).
+The learning rate controls the magnitude of each weight update step. A rate that is too
+large causes the optimizer to overshoot loss minima and diverge; one that is too small
+produces progress too slow to be practical. Schedulers decay the learning rate over
+training so that early steps make large, fast progress and late steps fine-tune the
+solution near convergence.
 
-### ReduceLROnPlateau (both current models)
+### ReduceLROnPlateau
 
 ```python
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
     optimizer, mode="min", factor=0.5, patience=3
 )
-scheduler.step(va_loss)   # called every epoch
+scheduler.step(va_loss)   # called once per epoch
 ```
 
-Monitors val_loss. If it hasn't improved for 3 consecutive epochs,
-multiplies LR by 0.5. Reactive, responds to what's actually happening.
-
-Problem: the step-down is abrupt. A sudden LR halving can disturb
-the optimizer's momentum estimates and cause instability.
+This scheduler monitors `va_loss` after each epoch. If the validation loss fails to
+improve for three consecutive epochs, the learning rate is multiplied by 0.5. The
+behavior is reactive, responding to what the training dynamics are actually doing,
+which makes it robust to datasets with irregular convergence curves. The limitation
+is that the halving event is abrupt; a sudden factor-of-two reduction can perturb the
+optimizer's accumulated momentum estimates (`m_hat`, `v_hat`) and cause a transient
+loss spike before the reduced rate stabilizes.
 
 ### CosineAnnealingLR
 
@@ -156,18 +156,20 @@ the optimizer's momentum estimates and cause instability.
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
     optimizer, T_max=EPOCHS, eta_min=1e-6
 )
-scheduler.step()   # no argument, steps on epoch count
+scheduler.step()   # no argument; steps on epoch index
 ```
 
-Decays LR following a cosine curve from LR to eta_min over T_max epochs:
-```
-lr_t = eta_min + 0.5 * (lr_max - eta_min) * (1 + cos(pi * t / T_max))
-```
+The learning rate follows a cosine curve from its initial value to `eta_min` over
+`T_max` epochs:
 
-Smooth decay. No abrupt drops. Generally more stable than ReduceLROnPlateau
-for longer training runs.
+$$
+\text{lr}_t = \eta_{\min} + \frac{1}{2}(\text{lr}_{\max} - \eta_{\min})\left(1 + \cos\!\left(\frac{\pi t}{T_{\max}}\right)\right)
+$$
 
-### CosineAnnealingWarmRestarts (for dynamic training)
+The decay is smooth with no abrupt reductions, which tends to be more stable than
+ReduceLROnPlateau for longer training runs where momentum estimates carry useful history.
+
+### CosineAnnealingWarmRestarts
 
 ```python
 scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
@@ -175,42 +177,46 @@ scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
 )
 ```
 
-Runs cosine decay for T_0 epochs, then resets LR to the original value.
-Each restart, T_0 is multiplied by T_mult. So: 10 epochs, reset, 20 epochs,
-reset, 40 epochs, reset.
+SGDR applies cosine decay for `T_0` epochs and then resets the learning rate to
+`lr_max`, repeating with each cycle length multiplied by `T_mult`. For `T_0=10,
+T_mult=2`, the restart schedule is 10 epochs, 20 epochs, 40 epochs. The restart jolts
+the optimizer out of the local minimum it has settled into; the subsequent cosine decay
+then fine-tunes within the new region of the loss landscape. Checkpoints should be
+saved at the end of each cosine cycle, when the learning rate is near `eta_min` and the
+model is most thoroughly exploiting the current basin.
 
-The restart jolts the optimizer out of local minima. Used in SGDR:
-https://arxiv.org/abs/1608.03983
+Original paper: https://arxiv.org/abs/1608.03983
 
 ---
 
 ## WeightedRandomSampler
 
-Class imbalance in the dataset:
-- none:      147,431 samples
-- Near-full:     149 samples
-- Ratio:          ~990:1
+The LSWMD class distribution spans nearly three orders of magnitude: *none* accounts
+for 147,431 training samples while *Near-full* provides 149. Without intervention, the
+training loader draws batches that reflect this distribution, and the model converges
+toward a solution that is highly accurate on *none* but has seen too few rare-class
+examples to form reliable representations for them.
 
-Without intervention, the training loader gives the model mostly none batches.
-WeightedRandomSampler assigns each sample a probability of being drawn:
+`WeightedRandomSampler` assigns each training sample a draw probability inversely
+proportional to its class frequency:
 
 ```python
-class_weights  = 1.0 / class_counts        # rare class -> high weight
-sample_weights = class_weights[y_train]    # per-sample weight
+class_weights  = 1.0 / class_counts
+sample_weights = class_weights[y_train]
 sampler = WeightedRandomSampler(sample_weights, len(sample_weights))
 ```
 
-Near-full gets weight 1/149 = 0.0067.
-none gets weight 1/117,945 = 0.0000085.
-Near-full is sampled ~790x more often per sample than none.
+*Near-full* receives weight `1/149 = 0.0067`; *none* receives `1/147,431 = 0.0000068`.
+Each *Near-full* sample is drawn approximately 990× more often per unit probability
+than each *none* sample. The effect is that every mini-batch contains roughly equal
+representation across all nine classes regardless of the underlying dataset distribution.
 
-Result: every batch sees roughly equal representation of all classes.
-
-This is different from class weights in the loss function:
-- Sampler: changes which samples appear in batches
-- Loss weights: changes how hard the loss pushes on each class
-Both can be used simultaneously. The sampler is already implemented.
-Loss weights are an option to add to FocalLoss as an additional term.
+This mechanism operates at the data pipeline level, changing which samples appear in
+each batch. Loss class weighting, by contrast, operates at the gradient level, changing
+how much each sample's loss contributes to the weight update even after it has
+been sampled. The two can be combined: WeightedRandomSampler is already active in the
+current scripts; loss class weights are an additional term that can be passed to
+`FocalLoss` if per-class gradient amplification is needed beyond what the sampler provides.
 
 ---
 
@@ -220,23 +226,19 @@ Loss weights are an option to add to FocalLoss as an additional term.
 self.dropout = nn.Dropout(0.4)
 ```
 
-During training: randomly zeroes 40% of the 256 features before the classifier.
-During eval (model.eval()): disabled, all features active.
-
-Forces redundant representations. If the model learns that feature 47
-predicts Donut with 99% accuracy, dropout randomly removes it. The model
-must learn backup features. This prevents overfitting to training set patterns
-that don't generalize.
-
-The 0.4 rate means on average 102 of the 256 features are zeroed each
-forward pass. Increasing it (e.g. 0.5) adds more regularization.
-Decreasing it (e.g. 0.2) allows the model more capacity.
+During the training forward pass, Dropout randomly zeroes 40% of the 256 post-pool
+features before they reach the linear classifier. The zeroed features vary randomly
+per forward pass, forcing the network to distribute the discriminative information for
+each class across multiple redundant feature channels rather than concentrating it in
+a small number of high-confidence neurons. During evaluation (`model.eval()`), Dropout
+is disabled and all 256 features pass through unchanged, recovering the full
+representational capacity of the learned feature set.
 
 ---
 
-## What Overfitting Looks Like
+## What overfitting looks like
 
-Compare epoch-by-epoch output:
+Training diagnostics are visible in the epoch-by-epoch output:
 
 ```
 Epoch 01 | train loss 0.45 acc 0.85 | val loss 0.38 acc 0.88   <- underfitting
@@ -245,12 +247,11 @@ Epoch 18 | train loss 0.01 acc 0.99 | val loss 0.25 acc 0.97   <- slight overfit
 Epoch 40 | train loss 0.00 acc 1.00 | val loss 0.45 acc 0.94   <- overfit
 ```
 
-Signs of overfitting:
-- Train loss keeps falling but val loss starts rising
-- Train accuracy approaches 100% but val accuracy is lower and falling
-- Large gap between train and val metrics
-
-At epoch 20: train loss 0.0093, val loss 0.2774. The gap is large
-but val accuracy is still good (0.97). Slight overfit zone but not
-critical; the model generalizes well despite the train/val gap.
-This is common with dropout + BatchNorm keeping things stable.
+The canonical overfit signature is a training loss that continues to fall while validation
+loss stabilizes or rises, accompanied by a widening gap between training and validation
+accuracy. The model is memorizing training-set patterns that do not generalize. In the
+observed runs at epoch 20: train loss 0.0093, val loss 0.2774. The gap is large, but
+validation accuracy remains high (0.97) and the model generalizes well in practice.
+This is the common regime with dropout and BatchNorm active: train loss reaches near-zero
+because the training set has been seen many times, but the regularization prevents the
+learned representations from becoming training-set-specific.

@@ -1,118 +1,89 @@
-# Yield CNN Documentation Index
-**Author: Reynaldo Gomez**
-**Repo: Semiconductor-Engineering / Yield CNN / docs**
+# Yield CNN documentation index
 
-Reference notes written during development of the LSWMD wafer defect
-classifier. Written to be understood, not just referenced; each doc
-explains the why behind the implementation, not just what the code does.
+Author: Reynaldo Gomez
+Semiconductor-Engineering: Yield CNN
+
+Reference notes written during development of the LSWMD wafer defect classifier. Written to be understood, not just referenced; each document derives the why behind the implementation choices, connecting implementation details to the mathematical properties they are designed to exploit.
 
 ---
 
 ## Documents
 
-### 01_cnn_fundamentals.md
-What a CNN is mathematically. The forward pass layer by layer: convolution
-as a dot product, BatchNorm, SiLU vs ReLU, spatial downsampling, AdaptiveAvgPool,
-dropout, the linear classifier. The skip connection explained via gradient flow.
-Read this first.
+**01_cnn_fundamentals.md** establishes the mathematical identity of the network as $f_\theta(x) = \hat{y}$, where $x$ is a 64×64 wafer map, $\hat{y}$ is a 9-class score vector, and $\theta$ is the full parameter set, then traces the forward pass through each transformation. Convolution is derived as a sliding dot product producing spatially localized feature maps; BatchNorm2d is explained through the normalization formula and why the learnable $\gamma$ and $\beta$ parameters recover expressive capacity after normalization. The SiLU activation, $x \cdot \sigma(x)$, is contrasted with ReLU through its derivative structure and the non-zero gradient it provides for negative activations. AdaptiveAvgPool2d, the skip connection, and the $+1$ term in the residual gradient flow are covered in full. Read this first.
 
-### 02_training_mechanics.md
-The five-line training loop. CrossEntropyLoss vs FocalLoss with the math.
-Backpropagation and the chain rule. AdamW update equation explained term by term.
-Learning rate schedulers: ReduceLROnPlateau vs CosineAnnealingLR vs warm restarts.
-WeightedRandomSampler and why it is not the same as loss class weights.
-What overfitting looks like in the epoch output.
+**02_training_mechanics.md** covers the five-line optimization loop and the full chain from forward pass to weight update. CrossEntropyLoss and FocalLoss are derived side by side; the focal weighting term $(1 - p_t)^\gamma$ with gamma=2.0 is shown numerically to suppress the gradient contribution of the 29,486 *none* samples while preserving full-magnitude signal from hard classes such as Donut (111 samples) and Scratch (1,193). The AdamW update is unpacked by first moment, second moment, and the weight decay correction that distinguishes AdamW from standard Adam. The three learning rate schedules in use (ReduceLROnPlateau, CosineAnnealingLR, CosineAnnealingWarmRestarts) are compared on stability and convergence behavior. WeightedRandomSampler, which adjusts sampling probabilities inversely by class count, is distinguished from loss class weighting, which adjusts the gradient magnitude post-sample.
 
-### 03_reading_results.md
-How to read the classification report column by column. The difference between
-precision, recall, F1, accuracy, macro avg, and weighted avg. Why accuracy is
-misleading for LSWMD. Statistical uncertainty per class based on sample count.
-How to compare experiments. The confusion matrix and what to look for.
-Why val loss is saved over accuracy.
+**03_reading_results.md** establishes how to interpret the classification report produced by `sklearn.metrics.classification_report` after each evaluation pass. Precision, recall, and F1 are defined formulaically and mapped to manufacturing-relevant failure modes: low precision wastes engineering time on false alarms, low recall allows defective wafers to escape downstream. The accuracy statistic is shown to be dominated by the *none* class at 85.2% of the validation set and unsuitable as a headline metric. Macro F1, the unweighted mean across all nine classes, is established as the correct optimization target. Statistical uncertainty of each metric is derived from the binomial standard error $\sqrt{p(1-p)/n}$ and applied to each class to distinguish real improvements from measurement noise given the available support counts.
 
-### 04_dynamic_training.md
-The "differential score analyzer" concept mapped to real techniques: dynamic
-class weighting, learning rate warm restarts (SGDR), checkpoint-and-branch.
-How to open the training black box: per-batch loss logging, gradient norm
-monitoring, activation statistics, Grad-CAM. Research papers for each technique
-with direct links.
+**04_dynamic_training.md** maps the "differential score analyzer" concept, which monitors per-class convergence, detects stalls, applies targeted interventions, and reverts if they cause harm, to three concrete implementations: dynamic class weighting via a per-class F1 improvement rate $\Delta F_{1,c}(t) = F_{1,c}(t) - F_{1,c}(t - W)$ with a multiplicative boost when the rate falls below a convergence threshold; CosineAnnealingWarmRestarts (SGDR) with `T_0=10, T_mult=2` to escape local minima by periodically resetting the learning rate to `eta_max`; and checkpoint-and-branch using `copy.deepcopy` on both model and optimizer state to preserve Adam's momentum estimates across saved snapshots. A second section covers instrumentation of the training loop itself via per-batch loss logging, gradient norm monitoring with `p.grad.data.norm(2)`, activation statistics via `register_forward_hook`, and Grad-CAM for spatial attribution of model decisions.
 
-### 05_batch_size_ablation.md
-Batch size and LR ablation across 7 runs on yield_resnet_focal.py.
-Why 256 batch degraded Scratch performance, why 64 batch did not improve on 128,
-and why the macro F1 ceiling (0.888) is an architectural limit, not a
-hyperparameter limit. Confirmed optimal config: batch=128, LR=3e-4, epochs=40.
+**05_batch_size_ablation.md** documents the batch size and learning rate ablation across seven runs on `yield_resnet_focal.py`. Batch sizes of 64, 128, and 256 are tested at LR values derived from the linear scaling rule $\text{LR}_\text{new} = \text{LR}_\text{old} \cdot B_\text{new} / B_\text{old}$. The 256-batch configuration consistently collapsed Scratch precision to 0.44-0.60 across two confirming runs; the mechanism, reduced gradient noise removing the implicit regularization that rare classes depend on, is derived from the relationship between batch gradient variance and generalization to sharp versus flat minima. The 64-batch configuration failed to improve on 128 due to BatchNorm instability at approximately seven samples per class per batch under WeightedRandomSampler. The macro F1 ceiling at 0.888 across all seven runs is interpreted as evidence that the model is constrained by missing representational capacity, not by hyperparameter configuration.
+
+**06_se_coord.md** documents the SE attention and CoordConv ablation that followed the batch size experiments. Three implementation bugs are identified with their effect on result validity traced run by run: SEBlock initialized but not wired into `ResidualBlock.forward`, `in_ch=1` on a three-channel input silently discarding two channels, and `num_workers=2` on Windows. The root cause of CoordConv's macro F1 regression from 0.888 to 0.773 is derived: variable-size LSWMD source wafers rescaled to a fixed 64×64 grid produce coordinate channels whose normalized values do not correspond to consistent physical positions across the dataset, making the coordinate signal geometrically incoherent. The full ablation across `coord_only`, `se_only`, and `se_coord` variants is compared on macro F1, val loss, and per-class F1 for the three weakest classes. The decision to adopt SE attention as the new base architecture and discard CoordConv pending a data pipeline change is recorded with the supporting experimental evidence.
 
 ---
 
-## Experiment Results Summary
+## Experiment results summary
 
 | Experiment | Epochs | Macro F1 | Donut F1 | Scratch F1 | Notes |
 |---|---|---|---|---|---|
-| Baseline (plain CNN) | 20 | 0.80 | 0.56 | 0.76 | CrossEntropyLoss, MaxPool |
-| ResNet+Focal | 20 | 0.87 | 0.89 | 0.71 | ResNet + SiLU + FocalLoss |
-| ResNet+Focal | 40 | 0.89 | 0.87 | 0.80 | +20 epochs, CosineAnnealingLR |
+| Baseline (plain CNN) | 20 | 0.800 | 0.56 | 0.76 | CrossEntropyLoss, MaxPool |
+| ResNet+Focal | 20 | 0.870 | 0.89 | 0.71 | ResNet + SiLU + FocalLoss |
+| ResNet+Focal | 40 | 0.890 | 0.87 | 0.80 | +20 epochs, CosineAnnealingLR |
 | Batch ablation best | 40 | 0.888 | 0.867 | 0.803 | batch=128, LR=3e-4, confirmed optimal |
+| SE only | 40 | 0.886 | 0.873 | 0.802 | SE attention, ReduceLROnPlateau |
 
 ---
 
-## Key References
+## Key references
 
-**ResNet: skip connections**
-He et al., 2015. Deep Residual Learning for Image Recognition.
+He et al., 2015. *Deep Residual Learning for Image Recognition.*
 https://arxiv.org/abs/1512.03385
 
-**BatchNorm: activation normalization**
-Ioffe & Szegedy, 2015. Batch Normalization: Accelerating Deep Network Training.
+Ioffe & Szegedy, 2015. *Batch Normalization: Accelerating Deep Network Training.*
 https://arxiv.org/abs/1502.03167
 
-**SiLU / Swish: smooth activation**
-Ramachandran et al., 2017. Searching for Activation Functions.
+Ramachandran et al., 2017. *Searching for Activation Functions.*
 https://arxiv.org/abs/1710.05941
 
-**Focal Loss: imbalanced classification**
-Lin et al., 2017. Focal Loss for Dense Object Detection.
+Lin et al., 2017. *Focal Loss for Dense Object Detection.*
 https://arxiv.org/abs/1708.02002
 
-**AdamW: decoupled weight decay**
-Loshchilov & Hutter, 2017. Decoupled Weight Decay Regularization.
+Loshchilov & Hutter, 2017. *Decoupled Weight Decay Regularization.*
 https://arxiv.org/abs/1711.05101
 
-**SGDR: cosine annealing with warm restarts**
-Loshchilov & Hutter, 2016. SGDR: Stochastic Gradient Descent with Warm Restarts.
+Loshchilov & Hutter, 2016. *SGDR: Stochastic Gradient Descent with Warm Restarts.*
 https://arxiv.org/abs/1608.03983
 
-**Grad-CAM: visualizing CNN decisions**
-Selvaraju et al., 2016. Grad-CAM: Visual Explanations from Deep Networks.
+Selvaraju et al., 2016. *Grad-CAM: Visual Explanations from Deep Networks.*
 https://arxiv.org/abs/1610.02391
 
-**Linear scaling rule for batch size**
-Goyal et al., 2017. Accurate, Large Minibatch SGD: Training ImageNet in 1 Hour.
+Goyal et al., 2017. *Accurate, Large Minibatch SGD: Training ImageNet in 1 Hour.*
 https://arxiv.org/abs/1706.02677
 
-**Implicit regularization of small batch training**
-Keskar et al., 2017. On Large-Batch Training for Deep Learning.
+Keskar et al., 2017. *On Large-Batch Training for Deep Learning.*
 https://arxiv.org/abs/1609.04836
 
-**Class-Balanced Loss: effective number reweighting**
-Cui et al., 2019. Class-Balanced Loss Based on Effective Number of Samples.
+Cui et al., 2019. *Class-Balanced Loss Based on Effective Number of Samples.*
 https://arxiv.org/abs/1901.05555
 
-**OHEM: online hard example mining**
-Shrivastava et al., 2016. Training Region-based Object Detectors with Online Hard Example Mining.
+Shrivastava et al., 2016. *Training Region-based Object Detectors with Online Hard Example Mining.*
 https://arxiv.org/abs/1604.03540
 
-**Meta-Weight-Net: learned loss weighting**
-Shu et al., 2019. Meta-Weight-Net: Learning an Explicit Mapping for Sample Weighting.
+Shu et al., 2019. *Meta-Weight-Net: Learning an Explicit Mapping for Sample Weighting.*
 https://arxiv.org/abs/1902.07379
 
-**Population Based Training**
-Jaderberg et al., 2017. Population Based Training of Neural Networks.
+Jaderberg et al., 2017. *Population Based Training of Neural Networks.*
 https://arxiv.org/abs/1711.09846
 
-**Deep Learning textbook, free online**
-Goodfellow, Bengio, Courville. MIT Press.
+Hu et al., 2018. *Squeeze-and-Excitation Networks.*
+https://arxiv.org/abs/1709.01507
+
+Liu et al., 2018. *An Intriguing Failing of Convolutional Neural Networks and the CoordConv Solution.*
+https://arxiv.org/abs/1807.03247
+
+Goodfellow, Bengio, Courville. *Deep Learning.* MIT Press.
 https://www.deeplearningbook.org/
 
-**PyTorch documentation**
+PyTorch documentation.
 https://pytorch.org/docs/stable/index.html
