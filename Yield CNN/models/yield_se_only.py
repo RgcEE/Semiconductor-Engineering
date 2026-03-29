@@ -72,7 +72,7 @@ EPOCHS     = 40
 LR         = 3e-4
 
 PKL_PATH        = Path(__file__).parent.parent / "Dataset" / "LSWMD.pkl"
-CHECKPOINT_PATH = Path(__file__).parent.parent / "checkpoints" / "best_se_only.pt"
+CHECKPOINT_PATH = Path(__file__).parent.parent / "checkpoints" / "best_se_only_ls.pt"
 
 
 # --------------------------------------------------------------------------- #
@@ -279,7 +279,8 @@ class FocalLoss(nn.Module):
         self.gamma = gamma
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        ce           = F.cross_entropy(logits, targets, reduction="none")
+        ce           = F.cross_entropy(logits, targets,
+                                         label_smoothing=0.05, reduction="none")
         pt           = torch.exp(-ce)
         focal_weight = (1 - pt) ** self.gamma
         return (focal_weight * ce).mean()
@@ -425,9 +426,9 @@ def main():
     print("\n" + classification_report(y_true, y_pred, target_names=classes))
 
     log_run(
-        exp_id       = "se-only-v1",
+        exp_id       = "se-only-ls-v1",
         model        = "WaferResNet",
-        loss_fn      = "FocalLoss(gamma=2)",
+        loss_fn      = "FocalLoss(gamma=2, label_smoothing=0.05)",
         epochs       = EPOCHS,
         lr           = LR,
         batch_size   = BATCH_SIZE,
@@ -439,7 +440,7 @@ def main():
         best_epoch   = best_epoch,
         train_time_s = train_time,
         checkpoint   = CHECKPOINT_PATH.relative_to(Path(__file__).parent.parent).as_posix(),
-        notes        = "ResidualBlocks + SiLU + FocalLoss + SEBlock (no CoordConv)",
+        notes        = "ResidualBlocks + SiLU + FocalLoss + SEBlock (no CoordConv); label_smoothing=0.05 to reduce Scratch overconfidence",
     )
 
 
