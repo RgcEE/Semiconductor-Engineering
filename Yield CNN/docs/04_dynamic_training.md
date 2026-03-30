@@ -3,8 +3,6 @@
 Author: Reynaldo Gomez
 Semiconductor-Engineering: Yield CNN
 
-This document covers adaptive training, specifically the "differential score analyzer" concept, and connects it to real implemented techniques. It also addresses the training black box problem and the instrumentation needed to open it.
-
 ---
 
 ## The idea, formally stated

@@ -71,7 +71,7 @@ Note — none does not hit the cap: 248,215 pseudo-labels is below the 353,835 c
 
 The three persistently weak classes gain directly. Scratch: 954 original samples, 3,320 combined (3.5x). Loc: 2,874 original, 6,414 combined (2.2x). Near-full: 119 original, 476 combined (4.0x). These are the classes that have floored macro F1 below 0.89 in every prior run; additional training samples directly target the representational deficit.
 
-Total combined dataset: approximately 416,513 samples, a 3.0x increase over the 138,016 original labeled set.
+Total combined dataset: approximately 417,513 samples, a 3.0x increase over the 138,470 original labeled training set.
 
 ---
 

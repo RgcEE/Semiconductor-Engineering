@@ -186,6 +186,14 @@ sub-optimal optimization. The next step is an architectural change.
 
 ---
 
+## Decision
+
+`batch=128`, `LR=3e-4`, 40 epochs is the confirmed optimal configuration for this architecture. All seven hyperparameter runs produced macro F1 in the range 0.851–0.888; no configuration crossed 0.89. The Scratch–Edge-Loc–Loc performance floor is a representational limit caused by missing spatial position information, not an optimization failure that further hyperparameter tuning can address.
+
+Next stage: SE attention ablation (`yield_se_only.py`), testing whether per-channel reweighting inside each residual block resolves the spatially ambiguous class confusion.
+
+---
+
 ## References
 
 Goyal et al. 2017. *Accurate, Large Minibatch SGD: Training ImageNet in 1 Hour.*

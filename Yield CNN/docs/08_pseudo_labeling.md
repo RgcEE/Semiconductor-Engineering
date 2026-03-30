@@ -7,7 +7,7 @@ Semiconductor-Engineering: Yield CNN
 
 ## Baseline
 
-`yield_se_only.py` is the reference model. It correctly identifies 9 wafer defect classes with macro F1 0.886, trained on 172,000 labeled wafer maps from LSWMD. Every result in this document is measured against it.
+`yield_se_only.py` is the reference model. It correctly identifies 9 wafer defect classes with macro F1 0.886, trained on 138,360 training samples from LSWMD.
 
 ---
 
@@ -35,9 +35,9 @@ The 172k labeled set was combined with 340k pseudo-labeled samples and passed to
 
 Two failure modes were diagnosed.
 
-Note — none pseudo-labels dominated the combined dataset: the 3x cap for none is $117{,}945 \times 3 = 353{,}835$. The pseudo file contains 248,215 none samples, which is below the cap, so the `if len(cls_idx) > cap` branch never fires. All 248,215 none pseudo-labels pass through without truncation. The combined dataset is 87% none. WeightedRandomSampler produces balanced batches during training, but the validation set is also 87% none; the model finds the local minimum of predicting none for everything and stays there. Val accuracy of 3.6% at epoch 1 (model predicting random garbage) followed by 87% at epoch 2 (model predicting only none) is the signature of this collapse.
+1. Note — none pseudo-labels dominated the combined dataset: the 3x cap for none is $117{,}945 \times 3 = 353{,}835$. The pseudo file contains 248,215 none samples, which is below the cap, so the `if len(cls_idx) > cap` branch never fires. All 248,215 none pseudo-labels pass through without truncation. The combined dataset is 87% none. WeightedRandomSampler produces balanced batches during training, but the validation set is also 87% none; the model finds the local minimum of predicting none for everything and stays there. Val accuracy of 3.6% at epoch 1 (model predicting random garbage) followed by 87% at epoch 2 (model predicting only none) is the signature of this collapse.
 
-Note — label encoding mismatch (suspected, not confirmed): `encode_labels()` sorts alphabetically, producing Center=0, Donut=1, ..., none=8. If the pseudo-label file was saved with a different integer mapping, the integer 0 in the pseudo file may represent none rather than Center. WeightedRandomSampler then dramatically undersamples actual none and oversamples what it interprets as rare classes, but those samples are mislabeled none wafers. The assert in `load_pseudo()` checks class name list order but not that integer 0 in the pseudo file maps to the same class as integer 0 after `encode_labels()` runs.
+2. Note — label encoding mismatch (suspected, not confirmed): `encode_labels()` sorts alphabetically, producing Center=0, Donut=1, ..., none=8. If the pseudo-label file was saved with a different integer mapping, the integer 0 in the pseudo file may represent none rather than Center. WeightedRandomSampler then dramatically undersamples actual none and oversamples what it interprets as rare classes, but those samples are mislabeled none wafers. The assert in `load_pseudo()` checks class name list order but not that integer 0 in the pseudo file maps to the same class as integer 0 after `encode_labels()` runs.
 
 ```python
 # Verification — run before any retrain
@@ -68,7 +68,7 @@ Results at best checkpoint (epoch 18, val_loss=0.0758):
 
 | Model | Macro F1 | Scratch F1 | Loc F1 | Edge-Loc F1 | Donut F1 | Best epoch |
 |---|---|---|---|---|---|---|
-| se_only 40ep | 0.886 | 0.800 | 0.774 | 0.813 | 0.872 | 30 |
+| se_only 40ep | 0.886 | 0.802 | 0.774 | 0.814 | 0.873 | 30 |
 | pseudo (no Scratch) | 0.878 | 0.540 | 0.844 | 0.910 | 0.975 | 18 |
 
 Donut: 0.872 to 0.975. Edge-Loc: 0.813 to 0.910. Loc: 0.774 to 0.844. Near-full improved to 0.930. These gains are real; the pseudo-labels for these classes are reliable signal.
@@ -99,7 +99,7 @@ Results at best checkpoint (epoch 25, val_loss=0.0446):
 
 | Model | Macro F1 | Scratch F1 | Loc F1 | Edge-Loc F1 | Donut F1 | Best epoch |
 |---|---|---|---|---|---|---|
-| se_only 40ep | 0.886 | 0.800 | 0.774 | 0.813 | 0.872 | 30 |
+| se_only 40ep | 0.886 | 0.802 | 0.774 | 0.814 | 0.873 | 30 |
 | pseudo (no Scratch) | 0.878 | 0.540 | 0.844 | 0.910 | 0.975 | 18 |
 | pseudo (defect-only) | 0.884 | 0.620 | 0.844 | 0.910 | 0.975 | 25 |
 
@@ -131,3 +131,11 @@ What did not work: Scratch pseudo-labels were unreliable and excluded in the sec
 Net result: macro F1 0.884 versus se_only baseline 0.886 almost indistinguishable at the macro level. The class distribution of errors changed materially. Donut and Edge-Loc are now strong. Scratch is now the single weakest class.
 
 The val loss oscillation is a known limitation of the mixed validation set. Results should be read from the best checkpoint, not the final epoch.
+
+---
+
+## Decision
+
+The epoch-25 checkpoint from the defect-only pseudo run (val_loss=0.0446) is the final model. Pseudo-labeling produced a materially different class error distribution at near-identical macro F1; recovering Scratch to its se_only level requires either additional labeled Scratch samples or an upstream fix to the coordinate preprocessing that makes CoordConv viable.
+
+Next stage: Grad-CAM attribution analysis on the epoch-25 checkpoint to verify the model is attending to the correct spatial features for each defect class.
