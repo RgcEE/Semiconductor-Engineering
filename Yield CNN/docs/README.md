@@ -1,6 +1,7 @@
 # Yield CNN documentation index
 
 Author: Reynaldo Gomez
+
 ---
 
 ## Documents
@@ -17,7 +18,7 @@ Author: Reynaldo Gomez
 
 **06_se_coord.md** documents the SE attention and CoordConv ablation that followed the batch size experiments. Three implementation bugs are identified with their effect on result validity traced run by run: SEBlock initialized but not wired into `ResidualBlock.forward`, `in_ch=1` on a three-channel input silently discarding two channels, and `num_workers=2` on Windows. The root cause of CoordConv's macro F1 regression from 0.888 to 0.773 is derived: variable-size LSWMD source wafers rescaled to a fixed 64×64 grid produce coordinate channels whose normalized values do not correspond to consistent physical positions across the dataset, making the coordinate signal geometrically incoherent. The full ablation across `coord_only`, `se_only`, and `se_coord` variants is compared on macro F1, val loss, and per-class F1 for the three weakest classes. The decision to adopt SE attention as the new base architecture and discard CoordConv pending a data pipeline change is recorded with the supporting experimental evidence.
 
-**07_pseudo_labeling.md** documents the pseudo-labeling run using `best_se_only.pt` on 638,507 unlabeled LSWMD wafers. 340,568 samples (53.3%) met the per-class confidence threshold before capping. The Donut class produced 59,578 pseudo-labels at mean confidence 1.0000; the saturated softmax mechanism is derived and shown to indicate extrapolation onto out-of-distribution patterns rather than genuine Donut signal. Two mitigations are applied: Donut threshold raised from 0.98 to 0.999, and a `MAX_PSEUDO_MULTIPLIER = 3` cap enforced per class. Post-cap combined dataset is approximately 416,513 samples; the three weakest classes gain directly: Scratch 954→3,320, Loc 2,874→6,414, Near-full 119→476.
+**07_pseudo_labeling.md** documents the pseudo-labeling run using `best_se_only.pt` on 638,507 unlabeled LSWMD wafers. 340,568 samples (53.3%) met the per-class confidence threshold before capping. The Donut class produced 59,578 pseudo-labels at mean confidence 1.0000; the saturated softmax mechanism is derived and shown to indicate extrapolation onto out-of-distribution patterns rather than genuine Donut signal. Two mitigations are applied: Donut threshold raised from 0.98 to 0.999, and a `MAX_PSEUDO_MULTIPLIER = 3` cap enforced per class. Post-cap combined dataset is approximately 416,513 samples; the three weakest classes gain directly: Scratch 954 to 3,320, Loc 2,874 to 6,414, Near-full 119 to 476.
 
 **08_pseudo_labeling_experiments.md** documents three retrain experiments on the combined labeled + pseudo-labeled dataset (EXP-11, EXP-12, EXP-13). EXP-11 failed: 248,215 none pseudo-labels were not truncated by the 3x cap, making the combined dataset 87% none and causing model collapse to predicting only none. EXP-12 excluded none and strong classes (F1 > 0.90) from pseudo-labeling; Donut, Edge-Loc, and Loc improved materially but Scratch collapsed to F1 0.540 from overconfident pseudo-labels. EXP-13 excluded Scratch pseudo-labels; Scratch partially recovered to 0.620 while Donut (0.975), Edge-Loc (0.910), and Loc (0.844) held. Net result: macro F1 0.884 versus se_only baseline 0.886, statistically indistinguishable at the macro level. Best checkpoint: epoch 25, val_loss=0.0446.
 
