@@ -1,4 +1,4 @@
-## Yield CNN
+## Multiclass CNN for Wafer Defect
 
 Author: Reynaldo Gomez
 
